@@ -9,6 +9,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import io.openlineage.client.OpenLineage;
+import io.openlineage.client.OpenLineageClientUtils;
 import io.openlineage.hive.api.OpenLineageContext;
 import java.net.URI;
 import java.time.ZonedDateTime;
@@ -20,6 +21,21 @@ import org.apache.hadoop.hive.ql.hooks.HookContext;
 import org.junit.jupiter.api.Test;
 
 class EventEmitterTest {
+
+  @Test
+  void marksNamespaceOriginWithoutRewritingTheJob() throws Exception {
+    OpenLineage.RunEvent original =
+        OpenLineageClientUtils.runEventFromJson(
+            "{\"eventTime\":\"2026-11-23T00:00:00Z\",\"eventType\":\"COMPLETE\","
+                + "\"producer\":\"https://example.com\","
+                + "\"run\":{\"runId\":\"018c7e39-96d7-75db-b483-747d1158cb31\"},"
+                + "\"job\":{\"namespace\":\"default\",\"name\":\"job\"},"
+                + "\"inputs\":[],\"outputs\":[]}");
+    String marked = OpenLineageClientUtils.toJson(EventEmitter.markNamespaceOrigin(original, true));
+    assertThat(marked).contains("\"namespace\":\"default\"");
+    assertThat(marked).contains("\"namespace_origin\"");
+    assertThat(marked).contains("\"default\":true");
+  }
 
   @Test
   void testRunIdFromQueryInfo() {

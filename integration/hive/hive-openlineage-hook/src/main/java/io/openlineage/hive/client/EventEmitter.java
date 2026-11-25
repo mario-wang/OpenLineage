@@ -7,6 +7,8 @@ package io.openlineage.hive.client;
 import static io.openlineage.client.utils.UUIDUtils.generateStaticUUID;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.openlineage.client.Clients;
 import io.openlineage.client.OpenLineage.RunEvent;
 import io.openlineage.client.OpenLineageClient;
@@ -14,6 +16,7 @@ import io.openlineage.client.OpenLineageClientException;
 import io.openlineage.client.OpenLineageClientUtils;
 import io.openlineage.client.utils.UUIDUtils;
 import io.openlineage.hive.api.OpenLineageContext;
+import java.io.IOException;
 import java.time.Instant;
 import java.util.UUID;
 import lombok.Getter;
@@ -26,27 +29,41 @@ import org.apache.hadoop.hive.ql.hooks.HookContext;
 @Getter
 @Slf4j
 public class EventEmitter implements AutoCloseable {
+  private static final ObjectMapper MAPPER = OpenLineageClientUtils.newObjectMapper();
   private final OpenLineageClient client;
   private final UUID runId;
   private final String jobName;
   private final String jobNamespace;
+  private final boolean namespaceDefault;
 
   public EventEmitter(OpenLineageContext olContext) {
     Configuration conf = olContext.getHookContext().getConf();
     this.client = Clients.newClient(olContext.getOpenLineageConfig());
     this.runId = getRunId(olContext);
+    this.namespaceDefault = conf.getRaw(HiveOpenLineageConfigParser.NAMESPACE_KEY) == null;
     this.jobNamespace = conf.get(HiveOpenLineageConfigParser.NAMESPACE_KEY, "default");
     this.jobName = conf.get(HiveOpenLineageConfigParser.JOB_NAME_KEY, getJobName(olContext));
   }
 
+
   public void emit(RunEvent event) {
     try {
-      client.emit(event);
+      client.emit(markNamespaceOrigin(event, namespaceDefault));
       log.debug(
           "Emitting lineage completed successfully: {}", OpenLineageClientUtils.toJson(event));
-    } catch (OpenLineageClientException exception) {
+    } catch (OpenLineageClientException | IOException exception) {
       log.error("Could not emit lineage", exception);
     }
+  }
+
+  static RunEvent markNamespaceOrigin(RunEvent event, boolean namespaceDefault) throws IOException {
+    ObjectNode tree = (ObjectNode) MAPPER.readTree(OpenLineageClientUtils.toJson(event));
+    ObjectNode marker = tree.with("job").with("facets").putObject("namespace_origin");
+    marker.put("_producer", "https://github.com/OpenLineage/OpenLineage/integration/hive");
+    marker.put("_schemaURL", "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/JobFacet");
+    marker.put("integration", "HIVE");
+    marker.put("default", namespaceDefault);
+    return OpenLineageClientUtils.runEventFromJson(MAPPER.writeValueAsString(tree));
   }
 
   public static String getJobName(OpenLineageContext olContext) {
