@@ -379,6 +379,7 @@ class OpenLineageSparkListenerTest {
     }
 
     verify(endContext).setCommandChildExecution(true);
+    verify(endContext).start(child);
     verify(endContext).end(end);
   }
 
@@ -403,6 +404,7 @@ class OpenLineageSparkListenerTest {
     listener.onOtherEvent(end);
 
     verify(endContext, never()).setCommandChildExecution(anyBoolean());
+    verify(endContext).start(start);
     verify(endContext).end(end);
   }
 
