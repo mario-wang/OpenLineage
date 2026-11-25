@@ -5,8 +5,6 @@
 
 package io.openlineage.spark3.agent.lifecycle.plan.catalog;
 
-import static io.openlineage.spark.agent.util.CatalogDatasetFacetUtils.isHiveCatalog;
-
 import io.openlineage.client.OpenLineageClientException;
 import io.openlineage.client.utils.DatasetIdentifier;
 import io.openlineage.client.utils.DatasetIdentifier.Symlink;
@@ -17,20 +15,24 @@ import io.openlineage.spark.agent.util.CatalogDatasetFacetUtils;
 import io.openlineage.spark.agent.util.GoogleCloudPlatformUtils;
 import io.openlineage.spark.agent.util.PathUtils;
 import io.openlineage.spark.api.OpenLineageContext;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.TableIdentifier;
+import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException;
 import org.apache.spark.sql.connector.catalog.Identifier;
+import org.apache.spark.sql.connector.catalog.SupportsNamespaces;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
-import org.apache.spark.sql.execution.datasources.v2.V2SessionCatalog;
+import scala.Option;
 
 @Slf4j
-public class V2SessionCatalogHandler implements CatalogHandler {
+public class SupportsNamespacesCatalogHandler implements CatalogHandler {
   private OpenLineageContext context;
 
-  public V2SessionCatalogHandler(OpenLineageContext context) {
+  public SupportsNamespacesCatalogHandler(OpenLineageContext context) {
     this.context = context;
   }
 
@@ -41,7 +43,7 @@ public class V2SessionCatalogHandler implements CatalogHandler {
 
   @Override
   public boolean isClass(TableCatalog tableCatalog) {
-    return tableCatalog instanceof V2SessionCatalog;
+    return tableCatalog instanceof SupportsNamespaces;
   }
 
   @Override
@@ -50,9 +52,14 @@ public class V2SessionCatalogHandler implements CatalogHandler {
       TableCatalog tableCatalog,
       Identifier identifier,
       Map<String, String> properties) {
-    V2SessionCatalog v2Catalog = (V2SessionCatalog) tableCatalog;
-
-    Map<String, String> namespaceMetadata = v2Catalog.loadNamespaceMetadata(identifier.namespace());
+    Map<String, String> namespaceMetadata;
+    try {
+      namespaceMetadata =
+          ((SupportsNamespaces) tableCatalog).loadNamespaceMetadata(identifier.namespace());
+    } catch (NoSuchNamespaceException e) {
+      throw new OpenLineageClientException(
+          "Unable to extract DatasetIdentifier from namespace catalog", e);
+    }
     String namespaceLocation = namespaceMetadata.get("location");
 
     String tableLocation = properties.get(TableCatalog.PROP_LOCATION);
@@ -62,14 +69,11 @@ public class V2SessionCatalogHandler implements CatalogHandler {
     } else {
       if (namespaceLocation == null) {
         throw new OpenLineageClientException(
-            "Unable to extract DatasetIdentifier from V2SessionCatalog");
+            "Unable to extract DatasetIdentifier from namespace catalog");
       }
 
-      // table is dropped, no information in catalog
-      di =
-          PathUtils.fromPath(
-              PathUtils.reconstructDefaultLocation(
-                  namespaceLocation, identifier.namespace(), identifier.name()));
+      // Namespace metadata already contains the database directory, including custom locations.
+      di = PathUtils.fromPath(new Path(namespaceLocation, identifier.name()));
     }
     if (CatalogDatasetFacetUtils.isHiveSupportEnabled(session.sparkContext())
         && isHiveCatalog(tableCatalog)) {
@@ -86,9 +90,15 @@ public class V2SessionCatalogHandler implements CatalogHandler {
       }
     }
 
-    if (namespaceLocation != null && di.getSymlinks().isEmpty()) {
-      di.withSymlink(
-          new Symlink(identifier.toString(), namespaceMetadata.get("location"), SymlinkType.TABLE));
+    if (di.getSymlinks().isEmpty()) {
+      String[] namespace = identifier.namespace();
+      TableIdentifier tableIdentifier =
+          new TableIdentifier(
+              identifier.name(),
+              Option.apply(namespace.length == 0 ? null : namespace[namespace.length - 1]));
+      // Use the same warehouse and table alias as V1 read/write events.
+      return PathUtils.fromTableIdentifier(
+          tableIdentifier, session.sparkContext(), FilesystemDatasetUtils.toLocation(di));
     }
     return di;
   }
@@ -99,13 +109,18 @@ public class V2SessionCatalogHandler implements CatalogHandler {
     return context
         .getSparkContext()
         .filter(CatalogDatasetFacetUtils::isHiveSupportEnabled)
-        .filter(sc -> CatalogDatasetFacetUtils.isHiveCatalog(tableCatalog))
+        .filter(sc -> isHiveCatalog(tableCatalog))
         .flatMap(c -> CatalogDatasetFacetUtils.getCatalogDatasetFacetForHive(context))
         .map(CatalogWithAdditionalFacets::of);
   }
 
   @Override
   public String getName() {
-    return "session";
+    return "supports-namespaces";
+  }
+
+  private static boolean isHiveCatalog(TableCatalog tableCatalog) {
+    return CatalogDatasetFacetUtils.isHiveCatalog(tableCatalog)
+        || tableCatalog.getClass().getName().toLowerCase(Locale.ROOT).contains("hive");
   }
 }

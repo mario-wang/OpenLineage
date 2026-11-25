@@ -78,7 +78,7 @@ public class CatalogUtils {
             handler ->
                 handler.getDatasetIdentifier(
                     context.getSparkSession().get(), catalog, identifier, properties))
-        .findAny()
+        .findFirst()
         .orElseThrow(
             () ->
                 new UnsupportedCatalogException(
@@ -89,7 +89,7 @@ public class CatalogUtils {
 
   public static Optional<CatalogHandler> getCatalogHandler(
       OpenLineageContext context, TableCatalog catalog) {
-    return getHandlers(context).stream().filter(handler -> handler.isClass(catalog)).findAny();
+    return getHandlers(context).stream().filter(handler -> handler.isClass(catalog)).findFirst();
   }
 
   /**

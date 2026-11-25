@@ -81,6 +81,30 @@ class CatalogUtilsTest {
   }
 
   @Test
+  void prefersSpecificHandlerWhenFallbackAlsoMatches() {
+    CatalogHandler specific = mock(CatalogHandler.class);
+    CatalogHandler fallback = mock(CatalogHandler.class);
+    when(specific.hasClasses()).thenReturn(true);
+    when(fallback.hasClasses()).thenReturn(true);
+    when(specific.isClass(any())).thenReturn(true);
+    when(fallback.isClass(any())).thenReturn(true);
+    when(specific.getDatasetIdentifier(any(), any(), any(), any()))
+        .thenReturn(new DatasetIdentifier("db.orders", "https://catalog.example/lance"));
+    when(fallback.getDatasetIdentifier(any(), any(), any(), any()))
+        .thenReturn(new DatasetIdentifier("/warehouse/db/orders", "file"));
+
+    OpenLineageContext context = contextWithHandlers(specific, fallback);
+    when(context.getSparkSession()).thenReturn(Optional.of(mock(SparkSession.class)));
+
+    assertEquals(specific, CatalogUtils.getCatalogHandler(context, mock(TableCatalog.class)).get());
+    assertEquals(
+        "https://catalog.example/lance",
+        CatalogUtils.getDatasetIdentifier(
+                context, mock(TableCatalog.class), mock(Identifier.class), new HashMap<>())
+            .getNamespace());
+  }
+
+  @Test
   void testGetCatalogHandlerEmpty() {
     assertEquals(
         Optional.empty(), CatalogUtils.getCatalogHandler(emptyContext(), mock(TableCatalog.class)));

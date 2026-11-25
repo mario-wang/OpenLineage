@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
 
 import io.openlineage.client.OpenLineage;
 import io.openlineage.client.OpenLineageClientException;
@@ -26,26 +27,30 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.connector.catalog.Identifier;
+import org.apache.spark.sql.connector.catalog.SupportsNamespaces;
+import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.execution.datasources.v2.V2SessionCatalog;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
 @SuppressWarnings("PMD.AvoidDuplicateLiterals")
-class V2SessionCatalogHandlerTest {
+class SupportsNamespacesCatalogHandlerTest {
   private final OpenLineageContext context = mock(OpenLineageContext.class);
-  private final V2SessionCatalogHandler catalogHandler = new V2SessionCatalogHandler(context);
+  private final SupportsNamespacesCatalogHandler catalogHandler =
+      new SupportsNamespacesCatalogHandler(context);
   private final V2SessionCatalog catalog = mock(V2SessionCatalog.class);
   private final SparkSession session = mock(SparkSession.class);
   private final SparkContext sparkContext = mock(SparkContext.class);
   private final Map<String, String> properties =
       Collections.singletonMap("location", "file:/tmp/warehouse/schema.db/table");
   private final Map<String, String> namespaceMetadata =
-      Collections.singletonMap("location", "file:/tmp/warehouse");
+      Collections.singletonMap("location", "file:/tmp/warehouse/schema.db");
   private final Identifier id = Identifier.of(new String[] {"catalog", "schema"}, "table");
 
   @BeforeEach
@@ -53,7 +58,56 @@ class V2SessionCatalogHandlerTest {
     when(context.getSparkSession()).thenReturn(Optional.of(session));
     when(context.getSparkContext()).thenReturn(Optional.of(sparkContext));
     when(session.sparkContext()).thenReturn(sparkContext);
+    when(sparkContext.hadoopConfiguration()).thenReturn(new Configuration(false));
   }
+
+  @Test
+  void supportsAnyNamespaceCatalog() {
+    TableCatalog namespaceCatalog =
+        mock(TableCatalog.class, withSettings().extraInterfaces(SupportsNamespaces.class));
+
+    assertThat(catalogHandler.isClass(namespaceCatalog)).isTrue();
+  }
+
+  @Test
+  void addsHiveMetastoreSymlinkForHiveNamespaceCatalog() {
+    TableCatalog hiveCatalog = mock(ExampleHiveCatalog.class);
+    Identifier identifier = Identifier.of(new String[] {"sales"}, "orders");
+    SparkSession hiveSession = mock(SparkSession.class);
+    SparkContext hiveSparkContext = mock(SparkContext.class);
+    URI metastoreUri = URI.create("thrift://hive-host:9083");
+    when(hiveSession.sparkContext()).thenReturn(hiveSparkContext);
+    when(hiveSparkContext.hadoopConfiguration()).thenReturn(new Configuration(false));
+
+    try (MockedStatic<CatalogDatasetFacetUtils> catalogUtils =
+            mockStatic(CatalogDatasetFacetUtils.class);
+        MockedStatic<PathUtils> pathUtils = mockStatic(PathUtils.class)) {
+      catalogUtils
+          .when(() -> CatalogDatasetFacetUtils.isHiveSupportEnabled(hiveSparkContext))
+          .thenReturn(true);
+      pathUtils
+          .when(() -> PathUtils.fromPath(any()))
+          .thenReturn(new DatasetIdentifier("/warehouse/sales/orders", "file"));
+      pathUtils
+          .when(() -> PathUtils.getMetastoreUri(hiveSparkContext))
+          .thenReturn(Optional.of(metastoreUri));
+      pathUtils
+          .when(() -> PathUtils.prepareHiveUri(metastoreUri))
+          .thenReturn(URI.create("hive://hive-host:9083"));
+
+      DatasetIdentifier dataset =
+          catalogHandler.getDatasetIdentifier(
+              hiveSession,
+              hiveCatalog,
+              identifier,
+              Collections.singletonMap(TableCatalog.PROP_LOCATION, "file:/warehouse/sales/orders"));
+
+      assertThat(dataset.getSymlinks()).hasSize(1);
+      assertThat(dataset.getSymlinks().get(0).getNamespace()).isEqualTo("hive://hive-host:9083");
+    }
+  }
+
+  private interface ExampleHiveCatalog extends TableCatalog, SupportsNamespaces {}
 
   @Test
   void testGetNonHiveDatasetIdentifierWhenOnlyTableLocationPresent() {
@@ -73,7 +127,8 @@ class V2SessionCatalogHandlerTest {
 
   @Test
   void testGetNonHiveDatasetIdentifierWhenWarehouseLocationPresent() {
-    when(sparkContext.getConf()).thenReturn(new SparkConf());
+    when(sparkContext.getConf())
+        .thenReturn(new SparkConf().set("spark.sql.warehouse.dir", "file:/tmp/warehouse"));
     when(catalog.loadNamespaceMetadata(id.namespace())).thenReturn(namespaceMetadata);
 
     DatasetIdentifier datasetIdentifier =
@@ -86,9 +141,34 @@ class V2SessionCatalogHandlerTest {
     assertThat(datasetIdentifier.getSymlinks()).hasSize(1);
 
     assertThat(datasetIdentifier.getSymlinks().get(0))
-        .hasFieldOrPropertyWithValue("name", "catalog.schema.table")
+        .hasFieldOrPropertyWithValue("name", "schema.table")
         .hasFieldOrPropertyWithValue("namespace", "file:/tmp/warehouse")
         .hasFieldOrPropertyWithValue("type", SymlinkType.TABLE);
+  }
+
+  @Test
+  void droppedTableUsesDatabaseDirectoryOnceAndSameIdentityAsWrites() {
+    when(sparkContext.getConf())
+        .thenReturn(new SparkConf().set("spark.sql.warehouse.dir", "file:/tmp/warehouse"));
+    when(catalog.loadNamespaceMetadata(id.namespace())).thenReturn(namespaceMetadata);
+    DatasetIdentifier written =
+        catalogHandler.getDatasetIdentifier(session, catalog, id, properties);
+    DatasetIdentifier dropped =
+        catalogHandler.getDatasetIdentifier(session, catalog, id, Collections.emptyMap());
+    assertThat(dropped.getName()).isEqualTo(written.getName());
+    assertThat(dropped.getNamespace()).isEqualTo(written.getNamespace());
+    assertThat(dropped.getSymlinks()).usingRecursiveComparison().isEqualTo(written.getSymlinks());
+  }
+
+  @Test
+  void droppedTableUsesCustomDatabaseDirectory() {
+    when(sparkContext.getConf()).thenReturn(new SparkConf());
+    when(catalog.loadNamespaceMetadata(id.namespace()))
+        .thenReturn(Collections.singletonMap("location", "file:/custom/database"));
+    DatasetIdentifier dataset =
+        catalogHandler.getDatasetIdentifier(session, catalog, id, Collections.emptyMap());
+    assertThat(dataset.getName()).isEqualTo("/custom/database/table");
+    assertThat(dataset.getSymlinks()).isEmpty();
   }
 
   @Test
@@ -216,6 +296,6 @@ class V2SessionCatalogHandlerTest {
             () -> catalogHandler.getDatasetIdentifier(session, catalog, id, new HashMap<>()));
 
     assertThat(thrown.getMessage())
-        .contains("Unable to extract DatasetIdentifier from V2SessionCatalog");
+        .contains("Unable to extract DatasetIdentifier from namespace catalog");
   }
 }
