@@ -91,6 +91,7 @@ class JobListenerTest {
       doNothing().when(context).onJobSubmitted();
 
       listener.onJobSubmitted(jobClient, null);
+      verify(context).setNamespaceDefault(false);
       verify(context, times(1)).onJobSubmitted();
       verify(tracker, times(1)).startTracking(eq(openLineageContext), any());
     }
@@ -148,6 +149,7 @@ class JobListenerTest {
               .executionEnvironment(streamExecutionEnvironment)
               .build();
       listener.onJobSubmitted(jobClient, null);
+      verify(context).setNamespaceDefault(false);
       verify(context, times(1)).onJobSubmitted();
       verify(tracker, times(1)).startTracking(eq(openLineageContext), any());
     }
@@ -272,8 +274,44 @@ class JobListenerTest {
       doNothing().when(context).onJobSubmitted();
 
       listener.onJobSubmitted(jobClient, null);
+      verify(context).setNamespaceDefault(true);
       verify(context, times(1)).onJobSubmitted();
       verify(tracker, times(1)).startTracking(eq(openLineageContext), any());
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void testExplicitDefaultNamespaceIsNotMarkedAsInferred() {
+    Configuration configuration = new Configuration();
+    configuration.setString("execution.job-listener.openlineage.namespace", DEFAULT_JOB_NAMESPACE);
+    StreamExecutionEnvironment environment = new StreamExecutionEnvironment(configuration);
+    FieldUtils.writeField(
+        FieldUtils.getField(StreamExecutionEnvironment.class, "transformations", true),
+        environment,
+        transformations,
+        true);
+    doNothing().when(tracker).startTracking(openLineageContext, context::onJobCheckpoint);
+
+    listener =
+        OpenLineageFlinkJobListener.builder()
+            .executionEnvironment(environment)
+            .jobTracker(tracker)
+            .build();
+
+    try (MockedStatic<FlinkExecutionContextFactory> contextFactory =
+        mockStatic(FlinkExecutionContextFactory.class)) {
+      when(FlinkExecutionContextFactory.getContext(
+              eq((Configuration) environment.getConfiguration()),
+              argThat(
+                  identifier -> identifier.getJobNamespace().equals(DEFAULT_JOB_NAMESPACE)),
+              eq(JobTypeUtils.STREAMING),
+              eq(transformations)))
+          .thenReturn(context);
+
+      listener.onJobSubmitted(jobClient, null);
+      verify(context).setNamespaceDefault(false);
+      verify(context).onJobSubmitted();
     }
   }
 

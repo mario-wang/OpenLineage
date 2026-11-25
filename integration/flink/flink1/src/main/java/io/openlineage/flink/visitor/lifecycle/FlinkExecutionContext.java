@@ -20,6 +20,7 @@ import io.openlineage.flink.api.OpenLineageContext;
 import io.openlineage.flink.client.CheckpointFacet;
 import io.openlineage.flink.client.Versions;
 import io.openlineage.flink.facets.FlinkJobDetailsFacet;
+import io.openlineage.flink.config.JobNamespaceOrigin;
 import io.openlineage.flink.visitor.Visitor;
 import io.openlineage.flink.visitor.VisitorFactory;
 import io.openlineage.flink.visitor.VisitorFactoryImpl;
@@ -34,6 +35,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.Builder;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.flink.api.common.JobExecutionResult;
@@ -50,6 +52,7 @@ public class FlinkExecutionContext implements ExecutionContext {
 
   @Getter private final OpenLineageContext olContext;
   @Getter private final List<Transformation<?>> transformations;
+  @Setter private boolean namespaceDefault;
 
   @Override
   public void onJobSubmitted() {
@@ -228,7 +231,7 @@ public class FlinkExecutionContext implements ExecutionContext {
    */
   private RunEventBuilder commonEventBuilder() {
     OpenLineage openLineage = olContext.getOpenLineage();
-    JobFacets jobFacets =
+    JobFacetsBuilder jobFacetsBuilder =
         buildOwnershipFacet(new JobFacetsBuilder())
             .jobType(
                 openLineage
@@ -236,8 +239,9 @@ public class FlinkExecutionContext implements ExecutionContext {
                     .jobType(FLINK_JOB_TYPE)
                     .processingType(olContext.getProcessingType())
                     .integration(FLINK_INTEGRATION)
-                    .build())
-            .build();
+                    .build());
+    JobNamespaceOrigin.mark(openLineage, jobFacetsBuilder, namespaceDefault);
+    JobFacets jobFacets = jobFacetsBuilder.build();
 
     return openLineage
         .newRunEventBuilder()

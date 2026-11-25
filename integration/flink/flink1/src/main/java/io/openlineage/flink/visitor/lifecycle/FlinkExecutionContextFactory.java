@@ -5,6 +5,7 @@
 
 package io.openlineage.flink.visitor.lifecycle;
 
+import io.openlineage.flink.OpenLineageFlinkJobListener;
 import io.openlineage.flink.api.OpenLineageContext.JobIdentifier;
 import io.openlineage.flink.api.OpenLineageContextFactory;
 import io.openlineage.flink.client.EventEmitter;
@@ -22,7 +23,12 @@ public class FlinkExecutionContextFactory {
       String jobType,
       List<Transformation<?>> transformations) {
     FlinkOpenLineageConfig config = FlinkConfigParser.parse(configuration);
-    return getContext(config, jobIdentifier, jobType, new EventEmitter(config), transformations);
+    FlinkExecutionContext context =
+        getContext(config, jobIdentifier, jobType, new EventEmitter(config), transformations);
+    context.setNamespaceDefault(
+        !configuration.contains(
+            OpenLineageFlinkJobListener.OPEN_LINEAGE_LISTENER_CONFIG_JOB_NAMESPACE));
+    return context;
   }
 
   public static FlinkExecutionContext getContext(

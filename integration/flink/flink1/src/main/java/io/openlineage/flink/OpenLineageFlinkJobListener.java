@@ -77,6 +77,7 @@ public class OpenLineageFlinkJobListener implements JobListener {
 
   private final OpenLineageContinousJobTracker jobTracker;
   private final String jobNamespace;
+  private final boolean namespaceDefault;
   private final String jobName;
   private final Duration jobTrackingInterval;
   private final Map<JobID, FlinkExecutionContext> jobContexts = new HashMap<>();
@@ -97,6 +98,10 @@ public class OpenLineageFlinkJobListener implements JobListener {
               + "This integration method is not supposed to work with Flink 2 - "
               + "please check docs https://openlineage.io/docs/next/integrations/flink/flink2");
 
+      super.namespaceDefault(
+          super.jobNamespace == null
+              && !((Configuration) super.executionEnvironment.getConfiguration())
+                  .contains(OPEN_LINEAGE_LISTENER_CONFIG_JOB_NAMESPACE));
       if (super.jobNamespace == null) {
         super.jobNamespace(
             super.executionEnvironment
@@ -186,6 +191,7 @@ public class OpenLineageFlinkJobListener implements JobListener {
                   .build(),
               JobTypeUtils.extract(runtimeMode, transformations),
               transformations);
+      context.setNamespaceDefault(namespaceDefault);
 
       jobContexts.put(jobClient.getJobID(), context);
       context.onJobSubmitted();
